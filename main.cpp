@@ -1,102 +1,123 @@
-#include <string.h>
+/*
+    Projet : Lecture de capteurs sur carte nucléo pour les récupérer sur une base de données
+    Auteur : Carrascosa Arnaud
+    Date : 15/03/2020
+*/
+
 #include <stdio.h>
-#include <unistd.h>
-#include <fcntl.h> 		// descripteurs de fichiers ( open()...)
-#include <termios.h>	// 
-#include <errno.h>
-#include <iostream>
+#include <stdlib.h>
+#include <string.h> //Gestion de string
+#include <unistd.h>//Pour interagir avec le port série
+#include <fcntl.h>//Descripteurs de fichiers
+#include <termios.h>//Contrôle des ports de communication asynchrone
+#include <errno.h>//Gestion des erreurs
+#include <mariadb/mysql.h>//Pour utiliser mysql
+#include <iostream>//Permet l'utilisation du cout
+using namespace std;//Pour ne pas avoir à rajouter des std::
 
-/* baudrate settings are defined in <asm/termbits.h>, which is included by <termios.h> */
-#define BAUDRATE B115200            
-/* change this definition for the correct port */
-#define MODEMDEVICE "/dev/ttyS0"
-#define _POSIX_SOURCE 1 /* POSIX compliant source */
+#define PORTSERIE "/dev/ttyS0"//Définis la constante sur le chemin sur lequel la carte est branchée
+#define BAUDRATE 115200//Définis le taux de BAUD
 
-#define FALSE 0
-#define TRUE 1
 
-volatile int STOP=FALSE; 
-int main()
-{
-  	int sfd, c, res;
-    struct termios newtio;
+int main(){
+
+    //Déclaration des variables
+    int sfd, c, res;
     char buf[255];
-    ssize_t size;
-	
-	sfd = open(MODEMDEVICE, O_RDONLY | O_NOCTTY ); 
-	if (sfd == -1)
-	{
-	  printf ("Error  no is : %d\n", errno);
-	  printf("Error description is : %s\n",strerror(errno));
-	  return(-1);
-	}
-    bzero(&newtio, sizeof(newtio)); /* clear struct for new port settings */
- /* 
-          BAUDRATE: Set bps rate. You could also use cfsetispeed and cfsetospeed.
-          CRTSCTS : output hardware flow control (only used if the cable has
-                    all necessary lines. See sect. 7 of Serial-HOWTO)
-          CS8     : 8n1 (8bit,no parity,1 stopbit)
-          CLOCAL  : local connection, no modem contol
-          CREAD   : enable receiving characters
-        */
-    newtio.c_cflag = BAUDRATE | CRTSCTS | CS8 | CLOCAL | CREAD;
-         
-        /*
-          IGNPAR  : ignore bytes with parity errors
-          ICRNL   : map CR to NL (otherwise a CR input on the other computer
-                    will not terminate input)
-          otherwise make device raw (no other input processing)
-        */
-    newtio.c_iflag = IGNPAR | ICRNL;
-         
-       /*
-          ICANON  : enable canonical input
-          disable all echo functionality, and don't send signals to calling program
-        */
-    newtio.c_lflag = ICANON;
-         
+    string tempOutput;
+    string humOutput;
+    string pressOutput;
+    string requeteMySQL = "INSERT INTO mesure (pression,temperature,humidite) VALUES ('";//Début de requete SQL
+    char requeteFinale[1024]; //Sera utilisée pour la requete finale
 
-	/* 
-	  now clean the modem line and activate the settings for the port
-	*/
-	 tcflush(sfd, TCIFLUSH);
-	 tcsetattr(sfd,TCSANOW,&newtio);
-	
-	for (int i =0 ; i<50 ; i++)
-	{
-		
-	/*
-	  ** On lit :
-	  ** on passe a read :
-	  ** - le fd,
-	  ** - le buffer
-	  ** - la taille du buffer
-	  ** Attention si tu passe une taille de buffer plus grande que la taille de ton buffer,
-	  ** ton programme deviens sensible aux Buffer Overflow
-	  */
-	  size = read (sfd, buf, 127);
-   
-	  /*
-	  ** On raoute un '\0' à la fin de la chaine lut, pour être sur d'avoir une chaine de caractères valide.
-	  ** size correspondant a l'index du dernier caractere du buffer + 1.
-	  ** Ceci est utile si tu veux utiliser ta chaine dans une fonction comme strcmp() ou printf()
-	  */
- 
-	  buf[size] = 0;
-   
-	  /*
-	  ** On affiche ce que l'on viens de lire dans la console :
-	  ** NOTE :
-	  ** il existe des FD speciaux :
-	  ** Le fd 1 est la sortie standart ( console )
-	  */
- 
-	  //write (1, buf, size);
-	  std::cout << i << " " << buf << "\n";
-	  }
- 
-  /* Ne pas oublier de libérer ton file descriptor */
-  close(sfd);
- 
-  return 0;
+    //Ouvre le port série
+    struct termios newtio;
+    bzero(&newtio, sizeof(newtio));
+    newtio.c_cflag = B115200 | CRTSCTS | CS8 | CLOCAL | CREAD;
+    newtio.c_iflag = IGNPAR | ICRNL;
+    newtio.c_lflag = ICANON;
+    sfd = open(PORTSERIE, O_RDONLY | O_NOCTTY);
+    tcflush(sfd, TCIFLUSH);
+    tcsetattr(sfd,TCSANOW,&newtio);
+
+    if (sfd == -1){//Si le port série ne s'ouvre pas
+   	 cout << "Numero d'erreur : " << errno << endl;//Donne le numéro de l'erreur
+   	 cout << "Description d'erreur : " << strerror(errno) << endl;//Donne la description de l'erreur
+   	 return(-1);//Renvoie une erreur
+    }
+    else{//S'il n'y a pas d'erreur
+
+   	 cout << "Port serie ouvert en lecture.\n\n";//Message s'affichant pour dire que le port est ouvert
+
+   	 //Boucle permettant de lire les données
+   	 for (int i = 0; i < 50; i++){
+   		 res = read(sfd,buf,125);
+   		 string chaineDeCarac(buf);
+   		 buf[res]=0;
+   		 
+   		 //Permet de d'extraire les données de températures
+   		 if (chaineDeCarac.find("Temp[0]") != string::npos){//Si Temp[0] est trouvé alors :
+   			 tempOutput = chaineDeCarac.substr(10, chaineDeCarac.find(" d"));//Extrait le début de la chaine
+   			 tempOutput = tempOutput.substr(0,tempOutput.find(" "));//Enlève la fin de la chaine
+   			 //cout << tempOutput << endl;//Affiche les données (utile pour le debug)
+   		 }
+   		 //Permet de d'extraire les données d'humidité
+   		 if(chaineDeCarac.find("Hum[0]") != string::npos){//Si Hum[0] est trouvé alors :
+   			 humOutput = chaineDeCarac.substr(8, chaineDeCarac.find(" %"));//Extrait le début de la chaine
+   			 humOutput = humOutput.substr(0,humOutput.find(" "));//Enlève la fin de la chaine
+   			 //cout << humOutput << endl;//Affiche les données (utile pour le debug)
+   		 }
+   		 //Permet de d'extraire les données de pression
+   		 if(chaineDeCarac.find("Press[1]") != string::npos){//Si Press[1] est trouvé alors :
+   			 pressOutput = chaineDeCarac.substr(10, chaineDeCarac.find(" h"));//Extrait le début de la chaine
+   			 pressOutput = pressOutput.substr(0,pressOutput.find(" "));//Enlève la fin de la chaine
+   			 //cout << pressOutput << endl;//Affiche les données (utile pour le debug)
+   		 }
+   	 }
+
+   	 //Concaténation pour ajouter les données à la requête finale
+   	 requeteMySQL += pressOutput;//Rajoute les données
+   	 requeteMySQL +="','";//Rajoute la syntaxe pour la requête SQL
+   	 requeteMySQL += tempOutput;//Rajoute les données
+   	 requeteMySQL += "','";//Rajoute la syntaxe pour la requête SQL
+   	 requeteMySQL += humOutput;//Rajoute les données
+   	 requeteMySQL += "');";//Rajoute la syntaxe pour la requête SQL
+
+   	 //cout << requeteMySQL << endl;//Affiche la requête SQL finale, utile pour le debug
+   	 strcpy(requeteFinale, requeteMySQL.c_str());//Copie la requete du format string en tableau de char
+    }
+
+    close(sfd);//Ferme la lecture du port série
+
+    MYSQL * conn;//Connexion à la DataBase
+
+    //Gestion d'erreur de connexion
+    if ((conn = mysql_init (NULL)) == NULL){
+   	 cout << stderr << "N'a pas pu initiliser la base de donnees\n";//Message affiché si on n'arrive pas à se connecter à la DB
+   	 return EXIT_FAILURE;//Fermeture du programme avec erreur
+    }
+
+    //Gestion d'erreur de connexion
+    //localhost peut être remplacé par l'ip de la DB via adminer.php
+    //bts et snir sont réciproquement le nom d'utilisateur et mdp pour se connecter à la DB
+    //TPNucleoMesures est le nom de la DB
+    if (mysql_real_connect (conn, "localhost", "bts", "snir", "TPNucleoMesures", 0, NULL, 0) == NULL){
+   	 cout << stderr << "Erreur de connexion a la base de donnees\n";//Message affiché si on n'arrive pas à se connecter à la DB
+   	 return EXIT_FAILURE;//Fermeture du programme avec erreur
+    }
+
+    //Permet d'envoyer une requête SQL
+    if (mysql_query(conn, requeteFinale) != 0){//Gestion d'erreur
+   	 cout << stderr << "Echec de requete\n";//Message affiché si la requête envoyée n'est pas acceptée
+   	 return EXIT_FAILURE;//Fermeture du programme avec erreur
+    }
+    else{//Messages affichés si la requête se passe bien
+   	 cout << "La requete s'est effectue avec succes !\n";
+   	 cout << "Les donnees rentrees sont les suivantes :\n";
+   	 cout << "Pression : " << pressOutput << "\tTemperature : " << tempOutput << "\tHumidite : " << humOutput << endl;
+    }
+
+
+    mysql_close(conn);//Déconnexion à la DB
+    return EXIT_SUCCESS;//Fermeture du programme sans erreur
 }
